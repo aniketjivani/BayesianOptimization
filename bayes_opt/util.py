@@ -136,6 +136,30 @@ class UtilityFunction(object):
         return norm.cdf(z)
 
 
+    @staticmethod
+    def _eff(x, gp, y_max, t, epsFactor):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            mean, std = gp.predict(x, return_std=True)
+        
+        tpe = t + epsFactor * std
+        tme = t - epsFactor * std
+        
+        impPlus = tpe - mean
+        impMinus = tme - mean
+        imp = mean - t
+        
+        ZPlus = impPlus / std
+        ZMinus = impMinus / std
+        Z = -imp / std
+
+        ef = imp * (2 * norm.cdf(Z) - norm.cdf(ZMinus) - norm.cdf(ZPlus)) 
+        - sigma * (2 * norm.pdf(Z) - norm.pdf(ZMinus) - norm.pdf(ZPlus))
+        + epsFactor * sigma * (norm.cdf(ZPlus) - norm.cdf(ZMinus))
+
+        return ef
+
+        
 def load_logs(optimizer, logs):
     """Load previous ...
 
