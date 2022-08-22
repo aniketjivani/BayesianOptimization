@@ -1,4 +1,5 @@
 import warnings
+from queue import Queue, Empty
 
 from .target_space import TargetSpace
 from .event import Events, DEFAULT_EVENTS
@@ -7,32 +8,6 @@ from .util import UtilityFunction, acq_max, ensure_rng
 
 from sklearn.gaussian_process.kernels import Matern
 from sklearn.gaussian_process import GaussianProcessRegressor
-
-
-class Queue:
-    def __init__(self):
-        self._queue = []
-
-    @property
-    def empty(self):
-        return len(self) == 0
-
-    def __len__(self):
-        return len(self._queue)
-
-    def __next__(self):
-        if self.empty:
-            raise StopIteration("Queue is empty, no more objects to retrieve.")
-        obj = self._queue[0]
-        self._queue = self._queue[1:]
-        return obj
-
-    def next(self):
-        return self.__next__()
-
-    def add(self, obj):
-        """Add object to end of queue."""
-        self._queue.append(obj)
 
 
 class Observable(object):
@@ -162,7 +137,7 @@ class BayesianOptimization(Observable):
             maximize(). Otherwise it will evaluate it at the moment.
         """
         if lazy:
-            self._queue.add(params)
+            self._queue.put(params)
         else:
             self._space.probe(params)
             self.dispatch(Events.OPTIMIZATION_STEP)
@@ -191,11 +166,11 @@ class BayesianOptimization(Observable):
 
     def _prime_queue(self, init_points):
         """Make sure there's something in the queue at the very beginning."""
-        if self._queue.empty and self._space.empty:
+        if self._queue.empty() and self._space.empty:
             init_points = max(init_points, 1)
 
         for _ in range(init_points):
-            self._queue.add(self._space.random_sample())
+            self._queue.put(self._space.random_sample())
 
     def _prime_subscriptions(self):
         if not any([len(subs) for subs in self._events.values()]):
@@ -212,6 +187,8 @@ class BayesianOptimization(Observable):
                  kappa_decay=1,
                  kappa_decay_delay=0,
                  xi=0.0,
+                 t=0.0,
+                 epsFactor=2.0,
                  **gp_params):
         """
         Probes the target space to find the parameters that yield the maximum
@@ -227,11 +204,12 @@ class BayesianOptimization(Observable):
             Number of iterations where the method attempts to find the maximum
             value.
 
-        acq: {'ucb', 'ei', 'poi'}
+        acq: {'ucb', 'ei', 'poi', 'eff'}
             The acquisition method used.
                 * 'ucb' stands for the Upper Confidence Bounds method
                 * 'ei' is the Expected Improvement method
                 * 'poi' is the Probability Of Improvement criterion.
+                * 'eff' is the Expected Feasibility Function (from Bichon et al., 2008)
 
         kappa: float, optional(default=2.576)
             Parameter to indicate how closed are the next parameters sampled.
@@ -248,6 +226,10 @@ class BayesianOptimization(Observable):
 
         xi: float, optional(default=0.0)
             [unused]
+
+        t: Limit state that we are trying to find for the performance function, optional (default=0.0). Only the EFF uses this.
+
+        epsFactor: Distance to explore points around known threshold t, optional (default=2.0). Only the EFF uses this.
         """
         self._prime_subscriptions()
         self.dispatch(Events.OPTIMIZATION_START)
@@ -258,12 +240,14 @@ class BayesianOptimization(Observable):
                                kappa=kappa,
                                xi=xi,
                                kappa_decay=kappa_decay,
-                               kappa_decay_delay=kappa_decay_delay)
+                               kappa_decay_delay=kappa_decay_delay,
+                               t=t,
+                               epsFactor=epsFactor)
         iteration = 0
-        while not self._queue.empty or iteration < n_iter:
+        while not self._queue.empty() or iteration < n_iter:
             try:
-                x_probe = next(self._queue)
-            except StopIteration:
+                x_probe = self._queue.get(block=False)
+            except Empty:
                 util.update_params()
                 x_probe = self.suggest(util)
                 iteration += 1
